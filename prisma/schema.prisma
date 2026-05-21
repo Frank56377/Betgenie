@@ -1,0 +1,294 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== ENUMS ====================
+enum UserRole {
+  USER
+  ADMIN
+  MODERATOR
+}
+
+enum SubscriptionTier {
+  FREE
+  PREMIUM
+  ELITE
+}
+
+enum PredictionStatus {
+  PENDING
+  WON
+  LOST
+  VOID
+  ONGOING
+}
+
+enum BetStatus {
+  PENDING
+  WON
+  LOST
+  VOID
+  SETTLED
+}
+
+enum League {
+  EPL
+  LALIGA
+  SERIE_A
+  LIGUE_1
+  BUNDESLIGA
+  NPFL
+  PSL
+  UCL
+  EL
+  OTHER
+}
+
+// ==================== USERS & AUTH ====================
+model User {
+  id                  String    @id @default(cuid())
+  email               String    @unique
+  name                String?
+  password            String
+  phone               String?
+  avatar              String?
+  bio                 String?
+  role                UserRole  @default(USER)
+  subscriptionTier    SubscriptionTier @default(FREE)
+  subscriptionEndsAt  DateTime?
+  isVerified          Boolean   @default(false)
+  isActive            Boolean   @default(true)
+  favoriteTeams       Team[]    @relation("UserFavoriteTeams")
+  winRate             Float     @default(0)
+  totalBets           Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  predictions         Prediction[]
+  bets                BetSlip[]
+  accumulators        Accumulator[]
+  comments            Comment[]
+  notifications       Notification[]
+  leaderboardEntry    LeaderboardEntry?
+
+  @@index([email])
+  @@index([subscriptionTier])
+}
+
+// ==================== TEAMS & MATCHES ====================
+model Team {
+  id              String    @id @default(cuid())
+  name            String
+  shortCode       String    @unique
+  logo            String?
+  country         String
+  league          League
+  followers       User[]    @relation("UserFavoriteTeams")
+  homeMatches     Match[]   @relation("HomeTeam")
+  awayMatches     Match[]   @relation("AwayTeam")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([league])
+  @@index([shortCode])
+}
+
+model Match {
+  id              String    @id @default(cuid())
+  homeTeamId      String
+  awayTeamId      String
+  homeTeam        Team      @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeam        Team      @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  league          League
+  scheduledAt     DateTime
+  status          String    @default("scheduled") // scheduled, live, completed
+  homeScore       Int?
+  awayScore       Int?
+  venue           String?
+  referee         String?
+  injuries        String?
+  form            String? // JSON: {"home": "WWLWW", "away": "LWWWL"}
+  headToHead      String? // JSON array of last 5 h2h results
+  predictions     Prediction[]
+  accumulators    AccumulatorMatch[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([homeTeamId, awayTeamId, scheduledAt])
+  @@index([league])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+// ==================== PREDICTIONS & TIPS ====================
+model Prediction {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  matchId         String
+  match           Match     @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  
+  predictedOutcome String  // e.g., "HomeWin", "Draw", "AwayWin", "Over2.5", "BothScore"
+  confidence      Float     // 0-100
+  odds            Float
+  reasoning       String    // Why this bet was recommended
+  
+  status          PredictionStatus @default(PENDING)
+  isWon           Boolean?
+  payout          Float?
+  
+  tags            String[]  // ["value_bet", "sure_bet", "elite"]
+  category        String    // "elite", "free", "live"
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  settledAt       DateTime?
+
+  bets            BetSlip[] @relation("PredictionToBet")
+
+  @@index([userId])
+  @@index([matchId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([category])
+}
+
+// ==================== ACCUMULATORS ====================
+model Accumulator {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  title           String
+  description     String?
+  matches         AccumulatorMatch[]
+  totalOdds       Float
+  suggestedStake  Float     @default(1000)
+  expectedPayout  Float
+  
+  status          PredictionStatus @default(PENDING)
+  isWon           Boolean?
+  actualPayout    Float?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model AccumulatorMatch {
+  id              String    @id @default(cuid())
+  accumulatorId   String
+  accumulator     Accumulator @relation(fields: [accumulatorId], references: [id], onDelete: Cascade)
+  matchId         String
+  match           Match     @relation(fields: [matchId], references: [id])
+  
+  predictedOutcome String
+  odds            Float
+  
+  @@unique([accumulatorId, matchId])
+  @@index([accumulatorId])
+}
+
+// ==================== BET TRACKING ====================
+model BetSlip {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  predictions     Prediction[] @relation("PredictionToBet")
+  
+  betType         String    // "single", "double", "accumulator"
+  totalOdds       Float
+  stake           Float
+  potentialPayout Float
+  
+  status          BetStatus @default(PENDING)
+  actualPayout    Float?
+  
+  bookieId        String?   // Reference to bookie used
+  betslipCode     String?   // Screenshot or code for tracking
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  settledAt       DateTime?
+
+  @@index([userId])
+  @@index([status])
+}
+
+// ==================== COMMUNITY ====================
+model Comment {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  predictionId    String
+  content         String
+  likes           Int       @default(0)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([predictionId])
+  @@index([userId])
+}
+
+model Article {
+  id              String    @id @default(cuid())
+  title           String
+  slug            String    @unique
+  content         String
+  excerpt         String?
+  featuredImage   String?
+  
+  category        String    // "tips", "strategy", "news", "analysis"
+  views           Int       @default(0)
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([category])
+  @@index([createdAt])
+}
+
+model LeaderboardEntry {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  rank            Int
+  totalWins       Int       @default(0)
+  winRate         Float     @default(0)
+  totalProfit     Float     @default(0)
+  monthlyProfit   Float     @default(0)
+  
+  updatedAt       DateTime  @updatedAt
+
+  @@index([rank])
+}
+
+// ==================== NOTIFICATIONS ====================
+model Notification {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type            String    // "prediction_dropped", "tip_won", "accumulator_settled"
+  title           String
+  message         String
+  relatedId       String?   // Link to prediction, bet, etc.
+  read            Boolean   @default(false)
+  
+  createdAt       DateTime  @default(now())
+
+  @@index([userId])
+  @@index([read])
+}
